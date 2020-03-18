@@ -16,16 +16,19 @@ import dill
 import sys
 sys.path.append('../Dan_research/spock')
 from spock.modelfitting import train_test_split, ROC_curve, stable_unstable_hist, calibration_plot, unstable_error_fraction
-import spock.feature_functions as ff
-
-
+from spock.feature_functions import features
 import rebound
+import dask.dataframe as dd
+
+nworkers=os.cpu_count()
 ```
 
 
 ```python
 os.system("jupyter nbconvert --to markdown Tutorial.ipynb");
 ```
+
+# Generating fake systems
 
 
 ```python
@@ -72,7 +75,7 @@ Using methodolgy similar to Tamayo et al. 2020 (in prep)
 # 
 def generate_system():
     Mstar = 1
-    mutual_hill_radii_sep = rd.uniform(low=0, high=30, 2)
+    mutual_hill_radii_sep = rd.uniform(0, 40, 2)
     incs = rd.uniform(1e-3, 1e-1, 3)  # inclinations (radians)
     Ws = 2 * np.pi * rd.rand(3)  # longitude of ascending node (radians)
     ws = 2 * np.pi * rd.rand(3)  # pericenter orientation (radians)
@@ -107,7 +110,7 @@ def generate_system():
 
 ```python
 sim_names = "test_sims/"
-n = 10
+n = 100
 sa_names = [("id_%5.0d.bin"%i).replace(" ","0") for i in range(n)]
 
 for i in range(n):
@@ -117,219 +120,23 @@ for i in range(n):
 
 
 ```python
-Norbits = 10000
-Nout = 80
-trios = [[i,i+1,i+2] for i in range(1,sim.N_real-2)]
-features_args = [Norbits, Nout] + [trios]
-
-df = pd.DataFrame(ff.features(rebound.SimulationArchive(sim_names + sa_names[0])[0], features_args)[0])
-for i in range(1,n_small):
-    df = df.append(pd.DataFrame(ff.features(rebound.SimulationArchive(sim_names + sa_names[i])[0], features_args)[0]), ignore_index=True)
-
-df["sim"] = sa_names
-df
-```
-
-
-
-
-<div>
-<style scoped>
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
-</style>
-<table border="1" class="dataframe">
-  <thead>
-    <tr style="text-align: right;">
-      <th></th>
-      <th>EMcrossnear</th>
-      <th>EMfracstdnear</th>
-      <th>EPstdnear</th>
-      <th>MMRstrengthnear</th>
-      <th>EMcrossfar</th>
-      <th>EMfracstdfar</th>
-      <th>EPstdfar</th>
-      <th>MMRstrengthfar</th>
-      <th>MEGNO</th>
-      <th>MEGNOstd</th>
-      <th>sim</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <th>0</th>
-      <td>0.028118</td>
-      <td>0.166610</td>
-      <td>0.000038</td>
-      <td>NaN</td>
-      <td>0.846856</td>
-      <td>0.000077</td>
-      <td>0.000022</td>
-      <td>NaN</td>
-      <td>70.982251</td>
-      <td>23.754885</td>
-      <td>id_00000.bin</td>
-    </tr>
-    <tr>
-      <th>1</th>
-      <td>0.011435</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>0.110439</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>NaN</td>
-      <td>id_00001.bin</td>
-    </tr>
-    <tr>
-      <th>2</th>
-      <td>0.474298</td>
-      <td>0.007330</td>
-      <td>0.001356</td>
-      <td>NaN</td>
-      <td>0.777283</td>
-      <td>0.000193</td>
-      <td>0.000125</td>
-      <td>NaN</td>
-      <td>2.048657</td>
-      <td>0.227476</td>
-      <td>id_00002.bin</td>
-    </tr>
-    <tr>
-      <th>3</th>
-      <td>0.163710</td>
-      <td>0.008195</td>
-      <td>0.001451</td>
-      <td>0.008253</td>
-      <td>0.203941</td>
-      <td>0.000624</td>
-      <td>0.000034</td>
-      <td>0.020223</td>
-      <td>2.031106</td>
-      <td>0.225543</td>
-      <td>id_00003.bin</td>
-    </tr>
-    <tr>
-      <th>4</th>
-      <td>0.494556</td>
-      <td>0.000558</td>
-      <td>0.000163</td>
-      <td>NaN</td>
-      <td>0.537827</td>
-      <td>0.000508</td>
-      <td>0.000097</td>
-      <td>0.006829</td>
-      <td>2.031509</td>
-      <td>0.225664</td>
-      <td>id_00004.bin</td>
-    </tr>
-    <tr>
-      <th>5</th>
-      <td>0.227342</td>
-      <td>0.016265</td>
-      <td>0.002741</td>
-      <td>0.027690</td>
-      <td>0.419067</td>
-      <td>0.048081</td>
-      <td>0.004899</td>
-      <td>0.010698</td>
-      <td>139.569970</td>
-      <td>40.551850</td>
-      <td>id_00005.bin</td>
-    </tr>
-    <tr>
-      <th>6</th>
-      <td>0.248496</td>
-      <td>0.001293</td>
-      <td>0.000474</td>
-      <td>0.000537</td>
-      <td>0.376917</td>
-      <td>0.000833</td>
-      <td>0.000045</td>
-      <td>0.000231</td>
-      <td>2.012844</td>
-      <td>0.223537</td>
-      <td>id_00006.bin</td>
-    </tr>
-    <tr>
-      <th>7</th>
-      <td>0.220292</td>
-      <td>0.050049</td>
-      <td>0.000365</td>
-      <td>0.125627</td>
-      <td>1.064082</td>
-      <td>0.037364</td>
-      <td>0.004581</td>
-      <td>0.128535</td>
-      <td>22.362868</td>
-      <td>6.920978</td>
-      <td>id_00007.bin</td>
-    </tr>
-    <tr>
-      <th>8</th>
-      <td>0.490061</td>
-      <td>0.000274</td>
-      <td>0.000021</td>
-      <td>NaN</td>
-      <td>0.602438</td>
-      <td>0.000282</td>
-      <td>0.000014</td>
-      <td>0.016440</td>
-      <td>2.095067</td>
-      <td>0.232734</td>
-      <td>id_00008.bin</td>
-    </tr>
-    <tr>
-      <th>9</th>
-      <td>0.312278</td>
-      <td>0.002191</td>
-      <td>0.000008</td>
-      <td>0.074712</td>
-      <td>0.490182</td>
-      <td>0.001205</td>
-      <td>0.000048</td>
-      <td>NaN</td>
-      <td>2.165331</td>
-      <td>0.240415</td>
-      <td>id_00009.bin</td>
-    </tr>
-  </tbody>
-</table>
-</div>
-
-
-
-
-```python
 sim = rebound.SimulationArchive(sim_names + sa_names[6])[0]
 print([sim.particles[1+i].P for i in range(3)])
-print(ff.features(sim, features_args))
+print(features(sim, features_args))
 rebound.OrbitPlot(sim)
 ```
 
-    [2.8493147903958467, 3.974830773308586, 6.421992020106921]
-    ([EMcrossnear        0.248496
-    EMfracstdnear      0.001293
-    EPstdnear          0.000474
-    MMRstrengthnear    0.000537
-    EMcrossfar         0.376917
-    EMfracstdfar       0.000833
-    EPstdfar           0.000045
-    MMRstrengthfar     0.000231
-    MEGNO              2.012844
-    MEGNOstd           0.223537
+    [9.211456940922439, 17.703788427001395, 22.61118507162245]
+    ([EMcrossnear         0.177167
+    EMfracstdnear       0.015777
+    EPstdnear           0.000873
+    MMRstrengthnear     0.029728
+    EMcrossfar          0.545821
+    EMfracstdfar        0.017422
+    EPstdfar            0.001098
+    MMRstrengthfar      0.019615
+    MEGNO              46.711515
+    MEGNOstd           13.904520
     dtype: float64], True)
 
 
@@ -337,7 +144,7 @@ rebound.OrbitPlot(sim)
 
 
     (<Figure size 360x360 with 1 Axes>,
-     <matplotlib.axes._subplots.AxesSubplot at 0x7f2da66f8690>)
+     <matplotlib.axes._subplots.AxesSubplot at 0x7f71eb6ae310>)
 
 
 
@@ -345,15 +152,63 @@ rebound.OrbitPlot(sim)
 ![png](Tutorial_files/Tutorial_5_2.png)
 
 
+# Calculating features
+
 
 ```python
+Norbits = 10000
+Nout = 80
+trios = [[i,i+1,i+2] for i in range(1,sim.N_real-2)]
+features_args = [Norbits, Nout] + [trios]
 
+def calculate_features(row):
+    res, stable = features(rebound.SimulationArchive(sim_names + row["sim"])[0], features_args)
+    r = res[0]
+    return pd.Series(r, index=list(r.keys()))
 ```
+
+
+```python
+%%time
+df = pd.DataFrame(data=sa_names, columns=["sim"])
+ddf = dd.from_pandas(df, npartitions=nworkers)
+testres = calculate_features(df.loc[0])
+metadf = pd.DataFrame([testres])
+res = ddf.apply(calculate_features, axis=1, meta=metadf).compute(scheduler='processes')
+```
+
+    CPU times: user 1.25 s, sys: 41 ms, total: 1.29 s
+    Wall time: 18.3 s
+
+
+
+```python
+# res
+```
+
+
+```python
+# %%time
+# hmm = pd.DataFrame(features(rebound.SimulationArchive(sim_names + sa_names[0])[0], features_args)[0])
+# for i in range(1,10):
+#     hmm = hmm.append(pd.DataFrame(ff.features(rebound.SimulationArchive(sim_names + sa_names[i])[0], features_args)[0]), ignore_index=True)
+# hmm["sim"] = sa_names[:10]
+```
+
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+
+
+    CPU times: user 12.1 s, sys: 132 ms, total: 12.2 s
+    Wall time: 12.4 s
+
 
 # will work on stuff below tomorrow
 
 
 ```python
+datapath = '../Dan_research/spock/training_data/'
+dset = 'resonant/'
 datapath = '../Dan_research/spock/training_data/'
 dset = 'resonant/'
 Norbits = 1e4
@@ -365,14 +220,14 @@ trainingdatafolder = datapath+dset+featurefolder
 
 
 ```python
-space ={
-        'max_depth': hp.randint('x_max_depth',  20),
-        'min_child_weight': hp.quniform ('x_min_child', 1, 10, 1),
-        'subsample': hp.uniform ('x_subsample', 0.8, 1),
-        'scale_pos_weight': hp.uniform("x_pos_weight", 1, 50),
-        "learning_rate":hp.uniform("x_learning_rate",0.01,0.2),
-        'colsample_bytree': hp.uniform ('x_tree_colsample', 0.5,1),
-}
+# space ={
+#         'max_depth': hp.randint('x_max_depth',  20),
+#         'min_child_weight': hp.quniform ('x_min_child', 1, 10, 1),
+#         'subsample': hp.uniform ('x_subsample', 0.8, 1),
+#         'scale_pos_weight': hp.uniform("x_pos_weight", 1, 50),
+#         "learning_rate":hp.uniform("x_learning_rate",0.01,0.2),
+#         'colsample_bytree': hp.uniform ('x_tree_colsample', 0.5,1),
+# }
 
 def objective(params):
     clf = XGBClassifier(n_estimators = 100,
