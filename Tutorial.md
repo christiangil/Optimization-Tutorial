@@ -19,8 +19,9 @@ from spock.modelfitting import train_test_split, ROC_curve, stable_unstable_hist
 from spock.feature_functions import features
 import rebound
 import dask.dataframe as dd
+from multiprocessing import Pool
 
-nworkers=os.cpu_count()
+n_workers=os.cpu_count()
 ```
 
 
@@ -68,11 +69,16 @@ def min_es(ms, As):
 def check_es(a0, e0, a1, e1, a2, e2):
     return (e0 <= max_e_inner(a0, a1, e1)) and (e1 <= max_e_inner(a1, a2, e2)) and (e1 <= max_e_outer(a1, a0, e0)) and (e2 <= max_e_outer(a2, a1, e1))
 
+
+def collision(reb_sim, col):
+    reb_sim.contents._status = 5
+    return 0
+
+
 """
 Generating random systems
 Using methodolgy similar to Tamayo et al. 2020 (in prep)
 """
-# 
 def generate_system():
     Mstar = 1
     mutual_hill_radii_sep = rd.uniform(0, 40, 2)
@@ -87,12 +93,14 @@ def generate_system():
     for i in range(1,3):  # the other semi major axes are chosen by a mutual radii separation of 0-30
         shared_quant = np.cbrt(9 * (ms[i-1] + ms[i]) / Mstar) * mutual_hill_radii_sep[i-1]
         As[i] = As[i-1] * (6 + shared_quant) / (6 - shared_quant)
+    
+    radii = As * np.cbrt(ms[i] / Mstar / 3)
         
     es = np.array([0,0,0])
     bad_es = True
-    e0_max = max_e_inner(As[0], As[1])
-    e1_max = np.minimum(max_e_inner(As[1], As[2], es[2]), max_e_outer(As[1], As[0]))  # ~0.15
-    e2_max = max_e_outer(As[2], As[1])
+    e0_max = np.min([max_e_inner(As[0], As[1]), 1])
+    e1_max = np.min([np.minimum(max_e_inner(As[1], As[2], es[2]), max_e_outer(As[1], As[0])), 1]) # ~0.15
+    e2_max = np.min([max_e_outer(As[2], As[1]), 1])
     e_mins = min_es(ms, As)
     while bad_es:
         es = np.array([loguniform(e_mins[0], e0_max), loguniform(e_mins[1], e1_max), loguniform(e_mins[2], e2_max)])
@@ -102,15 +110,24 @@ def generate_system():
     sim.add(m=1.)
 #     print(ms, As, es, Ws, ws, Ms, incs)
     for i in range(3):
-        sim.add(m=ms[i], a=As[i], e=es[i], Omega=Ws[i], omega=ws[i], M=Ms[i], inc=incs[i])
+        sim.add(m=ms[i], a=As[i], e=es[i], Omega=Ws[i], omega=ws[i], M=Ms[i], inc=incs[i], r=radii[i])
     sim.move_to_com()
+    
+    sim.collision = 'line'
+    sim.collision_resolve = collision
+    sim.ri_whfast.keep_unsynchronized = 1
+    sim.ri_whfast.safe_mode = 0
+    
+    sim.integrator = "whfast"
+    sim.dt = np.sqrt(2) / 20 * sim.particles[1].P
+        
     return sim
 ```
 
 
 ```python
 sim_names = "test_sims/"
-n = 100
+n = 1024
 sa_names = [("id_%5.0d.bin"%i).replace(" ","0") for i in range(n)]
 
 for i in range(n):
@@ -120,31 +137,22 @@ for i in range(n):
 
 
 ```python
-sim = rebound.SimulationArchive(sim_names + sa_names[6])[0]
+sim = rebound.SimulationArchive(sim_names + sa_names[0])[0]
 print([sim.particles[1+i].P for i in range(3)])
-print(features(sim, features_args))
+print([sim.particles[1+i].r for i in range(3)])
+# print(features(sim, features_args))
 rebound.OrbitPlot(sim)
 ```
 
-    [9.211456940922439, 17.703788427001395, 22.61118507162245]
-    ([EMcrossnear         0.177167
-    EMfracstdnear       0.015777
-    EPstdnear           0.000873
-    MMRstrengthnear     0.029728
-    EMcrossfar          0.545821
-    EMfracstdfar        0.017422
-    EPstdfar            0.001098
-    MMRstrengthfar      0.019615
-    MEGNO              46.711515
-    MEGNOstd           13.904520
-    dtype: float64], True)
+    [8.53868391350995, 20.211721187399984, 21.155360121612865]
+    [0.018119143871028642, 0.0321819696774546, 0.03317610799049332]
 
 
 
 
 
     (<Figure size 360x360 with 1 Axes>,
-     <matplotlib.axes._subplots.AxesSubplot at 0x7f71eb6ae310>)
+     <matplotlib.axes._subplots.AxesSubplot at 0x7fb9e43e07d0>)
 
 
 
@@ -156,7 +164,7 @@ rebound.OrbitPlot(sim)
 
 
 ```python
-Norbits = 10000
+Norbits = 1e4
 Nout = 80
 trios = [[i,i+1,i+2] for i in range(1,sim.N_real-2)]
 features_args = [Norbits, Nout] + [trios]
@@ -171,20 +179,34 @@ def calculate_features(row):
 ```python
 %%time
 df = pd.DataFrame(data=sa_names, columns=["sim"])
-ddf = dd.from_pandas(df, npartitions=nworkers)
+ddf = dd.from_pandas(df, npartitions=n_workers)
 testres = calculate_features(df.loc[0])
 metadf = pd.DataFrame([testres])
 res = ddf.apply(calculate_features, axis=1, meta=metadf).compute(scheduler='processes')
+res.to_csv("test_sims_feat.csv")
 ```
 
-    CPU times: user 1.25 s, sys: 41 ms, total: 1.29 s
-    Wall time: 18.3 s
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
+      r = func(a, **kwargs)
 
 
+    CPU times: user 811 ms, sys: 219 ms, total: 1.03 s
+    Wall time: 2min
 
-```python
-# res
-```
 
 
 ```python
@@ -195,12 +217,59 @@ res = ddf.apply(calculate_features, axis=1, meta=metadf).compute(scheduler='proc
 # hmm["sim"] = sa_names[:10]
 ```
 
-    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/numpy/lib/function_base.py:3405: RuntimeWarning: Invalid value encountered in median
-      r = func(a, **kwargs)
+
+```python
+# res
+```
+
+# Are systems truly stable?
 
 
-    CPU times: user 12.1 s, sys: 132 ms, total: 12.2 s
-    Wall time: 12.4 s
+```python
+def system_stable(nsim):
+    sim = rebound.SimulationArchive(sim_names + sa_names[nsim])[0]
+    P1 = sim.particles[1].P
+    try:
+        sim.integrate(1e6 * P1, exact_finish_time=0)
+        return True
+    except:
+        return False
+```
+
+
+```python
+%%time
+system_stable(1)
+```
+
+    /storage/home/cjg66/miniconda3/lib/python3.7/site-packages/rebound/simulationarchive.py:132: RuntimeWarning: You have to reset function pointers after creating a reb_simulation struct with a binary file.
+      warnings.warn(message, RuntimeWarning)
+
+
+    CPU times: user 15.4 s, sys: 10 ms, total: 15.4 s
+    Wall time: 15.3 s
+
+
+
+
+
+    True
+
+
+
+
+```python
+%%time
+pool = Pool(processes=n_workers)
+nsim_list = np.arange(0, n)
+res = pool.map(system_stable, nsim_list)
+df = pd.DataFrame(data=sa_names, columns=["sim"])
+df["stability"] = res
+df.to_csv("test_sims_stab.csv")
+```
+
+    CPU times: user 6.93 s, sys: 1.49 s, total: 8.43 s
+    Wall time: 24min 16s
 
 
 # will work on stuff below tomorrow
