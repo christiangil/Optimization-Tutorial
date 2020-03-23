@@ -39,11 +39,12 @@ $$
 If your data is has homoscedastic and uncorrelated Gaussian errors (i.e. the errors are the same across all values of the measured or independent variables and don't depend on each other) then you can use ordinary least squares to find the ["best"](https://en.wikipedia.org/wiki/UMVU) estimate for the model parameters
 
 $\hat{\beta} = (X^T X)^{-1} X^T y$
+
 [OLS](https://en.wikipedia.org/wiki/Ordinary_least_squares#Matrix/vector_formulation)
 
 This is equivalent to finding the maximum likelihood estimate of the model parameters for Gaussian distributed data.
 
-If your data has heteroscedastic and/or correlated Gaussian errors, then you have to use the (only slightly) more complicated generalized least squares 
+If your data has heteroscedastic and/or correlated Gaussian errors, then you have to use the (only slightly) more complicated generalized least squares which involves the data covariances
 
 $\hat{\beta} = (X^T \Omega^{-1} X)^{-1} X^T \Omega^{-1} y$
 
@@ -63,10 +64,11 @@ gr(size=(711, 400)) # , leg=false)
 
 ```julia
 # times = sort(rand(10))
-times = sort(collect(range(0, 1, step = 1/10)) .+ 0.03 .* randn(11))
-println(times)
+# times = sort(collect(range(0, 1, step = 1/10)) .+ 0.03 .* randn(11))
+times = [-0.029420531390630337, 0.05937118750818386, 0.2671315486134463, 0.3158992229761232, 0.4384690024307414, 0.5213304110953845, 0.6162234212074693, 0.6680339634409973, 0.778601173018435, 0.9307096597820922, 1.0047502472600456]
 n = length(times)
-data = measurements.(times; σ=σ)
+# data = measurements.(times; σ=σ)
+data = [-0.5129299697872882, 0.3249590031693929, 1.2034083920915803, 0.9342805146435638, 0.2907109653244365, -0.4342659514970483, -0.6918164600596547, -0.5128245589349643, -1.1556669153060266, -0.24729048035974605, -0.0639886128929851]
 times_plot = collect(range(minimum(times) - .2, maximum(times) + .2, step = 1/100))
 data_noiseless = measurements.(times_plot)
 scatter(times, data, yerror=σ, label="Data")
@@ -107,119 +109,99 @@ end
 plot(plot_linear_fit(0), plot_linear_fit(1), plot_linear_fit(3), plot_linear_fit(9), layout = (2, 2))
 ```
 
-```julia
-using BenchmarkTools
-```
-
-```julia
-@btime OLS(X, data);
-```
-
-which of these models is the best? higher orders fit more closely to the data but seem to be overcorrecting to fit noise
+which of these models is the best? higher orders fit more closely to the data but seem to be overcorrecting for fit noise
 
 we can use regularization to penalize complexity
 
 but we no longer have a linear model so have to resort to the much slower nonlinear optimization :(
+
+Flux is a nonlinear model construction and fitting package for Julia that automatically calculates gradients to speed up fitting
 
 ```julia
 using Flux
 ```
 
 ```julia
-poly_degree = 9
-X_temp = X[:, 1:poly_degree+1]
+model_func(β, X) = X * β
 
-λ = .01  # controls relative importance between data and penalty
-q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
-penalty(β) = λ * sum(abs.(β) .^ q)
-loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
+function simple_train(poly_degree::Integer)
+    X_temp = X[:, 1:poly_degree+1]
+    β_flux = rand(poly_degree+1)
+    
+    loss(X, y; β=β_flux) = sum((y - model_func(β, X)) .^ 2)
+        
+    ps = Flux.params(β_flux)
+    flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
+    opt = ADAM(1)
 
-β = OLS(X[:, 1:poly_degree+1], data)
-β_flux = rand(poly_degree+1)
+    Flux.train!(loss, ps, flux_data, opt)
+end
+```
 
-ps = Flux.params(β_flux)
-flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
-opt = ADAM(1)
+nonlinear fitting is slower :(
 
-cb() = println("current loss: ", loss(X_temp, data))
+```julia
+using BenchmarkTools
 
-Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
+@btime OLS(X, data);
 
-println()
-println(β_flux)
-println("final loss: ", loss(X_temp, data))
-println()
-println(β)
-println("OLS loss: ", loss(X_temp, data; β=β))
-
-plot_linear_fit(poly_degree)
-plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+@btime simple_train(9);
 ```
 
 ```julia
-poly_degree = 5
-X_temp = X[:, 1:poly_degree+1]
+function train_with_regularization(poly_degree::Integer)
+    @assert 0 <= poly_degree <= max_polynomial_degree
+    X_temp = X[:, 1:poly_degree+1]
+    λ = 0.01  # controls relative importance between data and penalty
+    q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
+    penalty(β) = λ * sum(abs.(β) .^ q)
+    loss(X, y; β=β_flux) = sum((y - model_func(β, X)) .^ 2) + penalty(β)
+    
+    β = OLS(X_temp, data)
+    β_flux = rand(poly_degree + 1)
+    
+    ps = Flux.params(β_flux)
+    flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
+    opt = ADAM(1)
+    
+    cb() = println("current loss: ", loss(X_temp, data))
 
-λ = .01  # controls relative importance between data and penalty
-q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
-penalty(β) = λ * sum(abs.(β) .^ q)
-loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
-
-β = OLS(X[:, 1:poly_degree+1], data)
-β_flux = rand(poly_degree+1)
-
-ps = Flux.params(β_flux)
-flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
-opt = ADAM(1)
-
-cb() = println("current loss: ", loss(X_temp, data))
-
-Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
-
-println()
-println(β_flux)
-println("final loss: ", loss(X_temp, data))
-println()
-println(β)
-println("OLS loss: ", loss(X_temp, data; β=β))
-
-plot_linear_fit(poly_degree)
-plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+    Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.02 * poly_degree))
+    
+    println()
+    println(β_flux)
+    println("final loss: ", loss(X_temp, data))
+    println()
+    println(β)
+    println("OLS loss: ", loss(X_temp, data; β=β))
+    
+    plot_linear_fit(poly_degree)
+    plot!(times_plot, model_func(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+end
 ```
 
 ```julia
-poly_degree = 
-X_temp = X[:, 1:poly_degree+1]
-
-λ = .01  # controls relative importance between data and penalty
-q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
-penalty(β) = λ * sum(abs.(β) .^ q)
-loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
-
-β = OLS(X[:, 1:poly_degree+1], data)
-β_flux = rand(poly_degree+1)
-
-ps = Flux.params(β_flux)
-flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
-opt = ADAM(1)
-
-cb() = println("current loss: ", loss(X_temp, data))
-
-Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
-
-println()
-println(β_flux)
-println("final loss: ", loss(X_temp, data))
-println()
-println(β)
-println("OLS loss: ", loss(X_temp, data; β=β))
-
-plot_linear_fit(poly_degree)
-plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+train_with_regularization(9)
 ```
 
 ```julia
-#https://github.com/FluxML/model-zoo/blob/master/other/iris/iris.jl
+train_with_regularization(6)
+```
+
+```julia
+train_with_regularization(3)
+```
+
+```julia
+train_with_regularization(1)
+```
+
+For the too complex models, regularization helped to make them more realistic and generalize slightly better!
+
+# Switching gears
+
+```julia
+# https://github.com/FluxML/model-zoo/blob/master/other/iris/iris.jl
 # https://github.com/FluxML/Flux.jl/blob/master/docs/src/models/regularisation.md
 using Flux
 using Flux: crossentropy, normalise, onecold, onehotbatch
