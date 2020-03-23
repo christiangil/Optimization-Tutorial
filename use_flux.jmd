@@ -1,12 +1,226 @@
 
-beep borp
-
 ```julia
 include("create_jmds.jl")
 ```
 
+1. Modify the use_flux notebook to start with a simple linear regression problem (fitting a noisy cubic with a n-degree polynomial?)
+2. show how regularization can help
+3. explain logistic regression
+4. then use it to fit a small neural net (regularized and not) to convert the features to stability scores.
+
+5. Break off the Tutorial notebook above "Training models!" to be a record of how we are making the dataset that people can look at. 
+6. (or maybe lower):  If we want people to learn about XGB, I can clean up the lower section and write up a summary of their intro to boosted trees (https://xgboost.readthedocs.io/en/latest/tutorials/model.html). 
+
+For 1-4, I'm thinking that we'd use the data that you generate with the notebook in step 2. split #1 into two tutorials.  One really simple one (e.g., fitting a polynomial to data that's generated as a polynomial plus noise), and then another one that's doing the same basic things, but using your more complicated dataset/features.
+
+# Optimization Tutorial
+
+blah blah
+
+## Ordinary least squares
+
+If you can formulate your model in a linear fashion (i.e. $y = X \beta + \epsilon$), then by far the fastest way to find the best model is with linear least squares regression. 
+
+For example, if you wanted to fit the following polynomial model to data ($y$) measured at times ($t$)
+
+$y(t) = \beta_0 + \beta_1 t+ \beta_2 t^2 + ... + \epsilon$
+
+then you could express your model linearly where 
+
+$$ \beta = [\beta_0, \beta_1, \beta_2, ...] \ \ \& \ \
+    X = \begin{pmatrix}
+    1 & t_1 & t_1^2 &  \\
+    1 & t_2 & t_2^2 & \dots \\
+    1 & t_3 & t_3^2 &  \\
+     & \vdots &  & \ddots \\
+    \end{pmatrix}
+$$
+
+If your data is has homoscedastic and uncorrelated Gaussian errors (i.e. the errors are the same across all values of the measured or independent variables and don't depend on each other) then you can use ordinary least squares to find the ["best"](https://en.wikipedia.org/wiki/UMVU) estimate for the model parameters
+
+$\hat{\beta} = (X^T X)^{-1} X^T y$
+[OLS](https://en.wikipedia.org/wiki/Ordinary_least_squares#Matrix/vector_formulation)
+
+This is equivalent to finding the maximum likelihood estimate of the model parameters for Gaussian distributed data.
+
+If your data has heteroscedastic and/or correlated Gaussian errors, then you have to use the (only slightly) more complicated generalized least squares 
+
+$\hat{\beta} = (X^T \Omega^{-1} X)^{-1} X^T \Omega^{-1} y$
+
+where $\Omega$ is the covariance matrix of your data
+
+[GLS](https://en.wikipedia.org/wiki/Generalized_least_squares#Method_outline)
+
+```julia
+σ = 0.2
+measurements(t::Real; σ::Real=0.0) = σ * randn() + sin(t * 2 * π)
+```
+
+```julia
+using Plots
+gr(size=(711, 400)) # , leg=false)
+```
+
+```julia
+# times = sort(rand(10))
+times = sort(collect(range(0, 1, step = 1/10)) .+ 0.03 .* randn(11))
+println(times)
+n = length(times)
+data = measurements.(times; σ=σ)
+times_plot = collect(range(minimum(times) - .2, maximum(times) + .2, step = 1/100))
+data_noiseless = measurements.(times_plot)
+scatter(times, data, yerror=σ, label="Data")
+plot!(times_plot, data_noiseless, label="")
+```
+
+```julia
+OLS(X, y) = (X' * X) \ X' * y
+
+max_polynomial_degree = 9
+
+function build_X(times)
+    n = length(times)
+    X = zeros(n, max_polynomial_degree+1)
+    X[:, 1] = ones(n)
+    for j in 2:max_polynomial_degree+1
+        X[:, j] = X[:, j - 1] .* times
+    end
+    return X
+end
+
+X = build_X(times)
+X_plot = build_X(times_plot)
+
+labels = ["Constant", "Linear", "Quadratic", "Cubic", "Quartic", "Quintic", "Sextic", "Septic", "Optic", "Nonic"]
+
+function plot_linear_fit(degree::Integer)
+    degree += 1
+    plt = scatter(times, data, yerror=σ, label="Data")
+    plot!(times_plot, data_noiseless, label="")
+    β = OLS(X[:, 1:degree], data)
+    model = X_plot[:, 1:degree] * β
+    plot!(times_plot, model, lw=1, label=labels[degree])
+    ylims!(-1.5,1.5)
+    return plt
+end
+
+plot(plot_linear_fit(0), plot_linear_fit(1), plot_linear_fit(3), plot_linear_fit(9), layout = (2, 2))
+```
+
+```julia
+using BenchmarkTools
+```
+
+```julia
+@btime OLS(X, data);
+```
+
+which of these models is the best? higher orders fit more closely to the data but seem to be overcorrecting to fit noise
+
+we can use regularization to penalize complexity
+
+but we no longer have a linear model so have to resort to the much slower nonlinear optimization :(
+
+```julia
+using Flux
+```
+
+```julia
+poly_degree = 9
+X_temp = X[:, 1:poly_degree+1]
+
+λ = .01  # controls relative importance between data and penalty
+q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
+penalty(β) = λ * sum(abs.(β) .^ q)
+loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
+
+β = OLS(X[:, 1:poly_degree+1], data)
+β_flux = rand(poly_degree+1)
+
+ps = Flux.params(β_flux)
+flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
+opt = ADAM(1)
+
+cb() = println("current loss: ", loss(X_temp, data))
+
+Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
+
+println()
+println(β_flux)
+println("final loss: ", loss(X_temp, data))
+println()
+println(β)
+println("OLS loss: ", loss(X_temp, data; β=β))
+
+plot_linear_fit(poly_degree)
+plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+```
+
+```julia
+poly_degree = 5
+X_temp = X[:, 1:poly_degree+1]
+
+λ = .01  # controls relative importance between data and penalty
+q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
+penalty(β) = λ * sum(abs.(β) .^ q)
+loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
+
+β = OLS(X[:, 1:poly_degree+1], data)
+β_flux = rand(poly_degree+1)
+
+ps = Flux.params(β_flux)
+flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
+opt = ADAM(1)
+
+cb() = println("current loss: ", loss(X_temp, data))
+
+Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
+
+println()
+println(β_flux)
+println("final loss: ", loss(X_temp, data))
+println()
+println(β)
+println("OLS loss: ", loss(X_temp, data; β=β))
+
+plot_linear_fit(poly_degree)
+plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+```
+
+```julia
+poly_degree = 
+X_temp = X[:, 1:poly_degree+1]
+
+λ = .01  # controls relative importance between data and penalty
+q = 1  # controls shape of penalty. q=1 is called LASSO regression or L1 regularization. q=2 is called ridge regression or L2 regularization
+penalty(β) = λ * sum(abs.(β) .^ q)
+loss(X, y; β=β_flux) = sum((y - model(β, X)) .^ 2) + penalty(β)
+
+β = OLS(X[:, 1:poly_degree+1], data)
+β_flux = rand(poly_degree+1)
+
+ps = Flux.params(β_flux)
+flux_data = Iterators.repeated((X_temp, data), Int(3e3 * poly_degree))
+opt = ADAM(1)
+
+cb() = println("current loss: ", loss(X_temp, data))
+
+Flux.train!(loss, ps, flux_data, opt, cb = Flux.throttle(cb, 0.01 * poly_degree))
+
+println()
+println(β_flux)
+println("final loss: ", loss(X_temp, data))
+println()
+println(β)
+println("OLS loss: ", loss(X_temp, data; β=β))
+
+plot_linear_fit(poly_degree)
+plot!(times_plot, model(β_flux, X_plot[:, 1:poly_degree+1]), lw=1, label=labels[poly_degree+1] * " (Flux estimated)")
+```
+
 ```julia
 #https://github.com/FluxML/model-zoo/blob/master/other/iris/iris.jl
+# https://github.com/FluxML/Flux.jl/blob/master/docs/src/models/regularisation.md
 using Flux
 using Flux: crossentropy, normalise, onecold, onehotbatch
 using Statistics: mean
@@ -43,6 +257,7 @@ model = Chain(
     Dense(4, 3),
     softmax
 )
+
 
 loss(x, y) = crossentropy(model(x), y)
 
@@ -111,4 +326,9 @@ hand holdy -> advanced (do the same problem with more dimensions to see scaling)
 comparing algorithms
 
 ```julia
+# https://towardsdatascience.com/regularization-an-important-concept-in-machine-learning-5891628907ea
+# regularization example
+
+# https://www.machinelearningplus.com/machine-learning/logistic-regression-tutorial-examples-r/
+# logistic regression example
 ```
